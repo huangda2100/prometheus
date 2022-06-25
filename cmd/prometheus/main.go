@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/bits"
@@ -38,7 +39,6 @@ import (
 	"github.com/grafana/regexp"
 	conntrack "github.com/mwitkow/go-conntrack"
 	"github.com/oklog/run"
-	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/promlog"
@@ -47,6 +47,7 @@ import (
 	toolkit_web "github.com/prometheus/exporter-toolkit/web"
 	toolkit_webflag "github.com/prometheus/exporter-toolkit/web/kingpinflag"
 	"go.uber.org/atomic"
+	"go.uber.org/automaxprocs/maxprocs"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
 	klog "k8s.io/klog"
 	klogv2 "k8s.io/klog/v2"
@@ -149,6 +150,7 @@ type flagConfig struct {
 	enableExpandExternalLabels bool
 	enableNewSDManager         bool
 	enablePerStepStats         bool
+	enableAutoGOMAXPROCS       bool
 
 	prometheusURL   string
 	corsRegexString string
@@ -186,6 +188,9 @@ func (c *flagConfig) setFeatureListOptions(logger log.Logger) error {
 			case "promql-per-step-stats":
 				c.enablePerStepStats = true
 				level.Info(logger).Log("msg", "Experimental per-step statistics reporting")
+			case "auto-gomaxprocs":
+				c.enableAutoGOMAXPROCS = true
+				level.Info(logger).Log("msg", "Automatically set GOMAXPROCS to match Linux container CPU quota")
 			case "":
 				continue
 			case "promql-at-modifier", "promql-negative-offset":
@@ -382,14 +387,17 @@ func main() {
 	serverOnlyFlag(a, "query.max-samples", "Maximum number of samples a single query can load into memory. Note that queries will fail if they try to load more samples than this into memory, so this also limits the number of samples a query can return.").
 		Default("50000000").IntVar(&cfg.queryMaxSamples)
 
-	a.Flag("enable-feature", "Comma separated feature names to enable. Valid options: agent, exemplar-storage, expand-external-labels, memory-snapshot-on-shutdown, promql-at-modifier, promql-negative-offset, promql-per-step-stats, remote-write-receiver (DEPRECATED), extra-scrape-metrics, new-service-discovery-manager. See https://prometheus.io/docs/prometheus/latest/feature_flags/ for more details.").
+	a.Flag("scrape.discovery-reload-interval", "Interval used by scrape manager to throttle target groups updates.").
+		Hidden().Default("5s").SetValue(&cfg.scrape.DiscoveryReloadInterval)
+
+	a.Flag("enable-feature", "Comma separated feature names to enable. Valid options: agent, exemplar-storage, expand-external-labels, memory-snapshot-on-shutdown, promql-at-modifier, promql-negative-offset, promql-per-step-stats, remote-write-receiver (DEPRECATED), extra-scrape-metrics, new-service-discovery-manager, auto-gomaxprocs. See https://prometheus.io/docs/prometheus/latest/feature_flags/ for more details.").
 		Default("").StringsVar(&cfg.featureList)
 
 	promlogflag.AddFlags(a, &cfg.promlogConfig)
 
 	_, err := a.Parse(os.Args[1:])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, errors.Wrapf(err, "Error parsing commandline arguments"))
+		fmt.Fprintln(os.Stderr, fmt.Errorf("Error parsing commandline arguments: %w", err))
 		a.Usage(os.Args[1:])
 		os.Exit(2)
 	}
@@ -397,7 +405,7 @@ func main() {
 	logger := promlog.New(&cfg.promlogConfig)
 
 	if err := cfg.setFeatureListOptions(logger); err != nil {
-		fmt.Fprintln(os.Stderr, errors.Wrapf(err, "Error parsing feature list"))
+		fmt.Fprintln(os.Stderr, fmt.Errorf("Error parsing feature list: %w", err))
 		os.Exit(1)
 	}
 
@@ -418,13 +426,13 @@ func main() {
 
 	cfg.web.ExternalURL, err = computeExternalURL(cfg.prometheusURL, cfg.web.ListenAddress)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, errors.Wrapf(err, "parse external URL %q", cfg.prometheusURL))
+		fmt.Fprintln(os.Stderr, fmt.Errorf("parse external URL %q: %w", cfg.prometheusURL, err))
 		os.Exit(2)
 	}
 
 	cfg.web.CORSOrigin, err = compileCORSRegexString(cfg.corsRegexString)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, errors.Wrapf(err, "could not compile CORS regex string %q", cfg.corsRegexString))
+		fmt.Fprintln(os.Stderr, fmt.Errorf("could not compile CORS regex string %q: %w", cfg.corsRegexString, err))
 		os.Exit(2)
 	}
 
@@ -517,7 +525,14 @@ func main() {
 	klogv2.ClampLevel(6)
 	klogv2.SetLogger(log.With(logger, "component", "k8s_client_runtime"))
 
-	level.Info(logger).Log("msg", "Starting Prometheus", "version", version.Info())
+	modeAppName := "Prometheus Server"
+	mode := "server"
+	if agentMode {
+		modeAppName = "Prometheus Agent"
+		mode = "agent"
+	}
+
+	level.Info(logger).Log("msg", "Starting "+modeAppName, "mode", mode, "version", version.Info())
 	if bits.UintSize < 64 {
 		level.Warn(logger).Log("msg", "This Prometheus binary has not been compiled for a 64-bit architecture. Due to virtual memory constraints of 32-bit systems, it is highly recommended to switch to a 64-bit binary of Prometheus.", "GOARCH", runtime.GOARCH)
 	}
@@ -563,6 +578,15 @@ func main() {
 		queryEngine *promql.Engine
 		ruleManager *rules.Manager
 	)
+
+	if cfg.enableAutoGOMAXPROCS {
+		l := func(format string, a ...interface{}) {
+			level.Info(logger).Log("component", "automaxprocs", "msg", fmt.Sprintf(strings.TrimPrefix(format, "maxprocs: "), a...))
+		}
+		if _, err := maxprocs.Set(maxprocs.Logger(l)); err != nil {
+			level.Warn(logger).Log("component", "automaxprocs", "msg", "Failed to set GOMAXPROCS automatically", "err", err)
+		}
+	}
 
 	if !agentMode {
 		opts := promql.EngineOpts{
@@ -612,6 +636,7 @@ func main() {
 	cfg.web.Notifier = notifierManager
 	cfg.web.LookbackDelta = time.Duration(cfg.lookbackDelta)
 	cfg.web.IsAgent = agentMode
+	cfg.web.AppName = modeAppName
 
 	cfg.web.Version = &web.PrometheusVersion{
 		Version:   version.Version,
@@ -715,7 +740,7 @@ func main() {
 					fs, err := filepath.Glob(pat)
 					if err != nil {
 						// The only error can be a bad pattern.
-						return errors.Wrapf(err, "error retrieving rule files for %s", pat)
+						return fmt.Errorf("error retrieving rule files for %s: %w", pat, err)
 					}
 					files = append(files, fs...)
 				}
@@ -790,6 +815,7 @@ func main() {
 			},
 			func(err error) {
 				close(cancel)
+				webHandler.SetReady(false)
 			},
 		)
 	}
@@ -821,6 +847,19 @@ func main() {
 			},
 		)
 	}
+	if !agentMode {
+		// Rule manager.
+		g.Add(
+			func() error {
+				<-reloadReady.C
+				ruleManager.Run()
+				return nil
+			},
+			func(err error) {
+				ruleManager.Stop()
+			},
+		)
+	}
 	{
 		// Scrape manager.
 		g.Add(
@@ -838,6 +877,8 @@ func main() {
 			func(err error) {
 				// Scrape manager needs to be stopped before closing the local TSDB
 				// so that it doesn't try to write samples to a closed storage.
+				// We should also wait for rule manager to be fully stopped to ensure
+				// we don't trigger any false positive alerts for rules using absent().
 				level.Info(logger).Log("msg", "Stopping scrape manager...")
 				scrapeManager.Stop()
 			},
@@ -907,12 +948,12 @@ func main() {
 				}
 
 				if err := reloadConfig(cfg.configFile, cfg.enableExpandExternalLabels, cfg.tsdb.EnableExemplarStorage, logger, noStepSubqueryInterval, reloaders...); err != nil {
-					return errors.Wrapf(err, "error loading config from %q", cfg.configFile)
+					return fmt.Errorf("error loading config from %q: %w", cfg.configFile, err)
 				}
 
 				reloadReady.Close()
 
-				webHandler.Ready()
+				webHandler.SetReady(true)
 				level.Info(logger).Log("msg", "Server is ready to receive web requests.")
 				<-cancel
 				return nil
@@ -923,18 +964,6 @@ func main() {
 		)
 	}
 	if !agentMode {
-		// Rule manager.
-		g.Add(
-			func() error {
-				<-reloadReady.C
-				ruleManager.Run()
-				return nil
-			},
-			func(err error) {
-				ruleManager.Stop()
-			},
-		)
-
 		// TSDB.
 		opts := cfg.tsdb.ToTSDBOptions()
 		cancel := make(chan struct{})
@@ -954,7 +983,7 @@ func main() {
 
 				db, err := openDBWithMetrics(localStoragePath, logger, prometheus.DefaultRegisterer, &opts, localStorage.getStats())
 				if err != nil {
-					return errors.Wrapf(err, "opening storage failed")
+					return fmt.Errorf("opening storage failed: %w", err)
 				}
 
 				switch fsType := prom_runtime.Statfs(localStoragePath); fsType {
@@ -1010,7 +1039,7 @@ func main() {
 					&opts,
 				)
 				if err != nil {
-					return errors.Wrap(err, "opening storage failed")
+					return fmt.Errorf("opening storage failed: %w", err)
 				}
 
 				switch fsType := prom_runtime.Statfs(localStoragePath); fsType {
@@ -1048,7 +1077,7 @@ func main() {
 		g.Add(
 			func() error {
 				if err := webHandler.Run(ctxWeb, listener, *webConfig); err != nil {
-					return errors.Wrapf(err, "error starting web server")
+					return fmt.Errorf("error starting web server: %w", err)
 				}
 				return nil
 			},
@@ -1158,7 +1187,7 @@ func reloadConfig(filename string, expandExternalLabels, enableExemplarStorage b
 
 	conf, err := config.LoadFile(filename, agentMode, expandExternalLabels, logger)
 	if err != nil {
-		return errors.Wrapf(err, "couldn't load configuration (--config.file=%q)", filename)
+		return fmt.Errorf("couldn't load configuration (--config.file=%q): %w", filename, err)
 	}
 
 	if enableExemplarStorage {
@@ -1177,7 +1206,7 @@ func reloadConfig(filename string, expandExternalLabels, enableExemplarStorage b
 		timings = append(timings, rl.name, time.Since(rstart))
 	}
 	if failed {
-		return errors.Errorf("one or more errors occurred while applying the new configuration (--config.file=%q)", filename)
+		return fmt.Errorf("one or more errors occurred while applying the new configuration (--config.file=%q)", filename)
 	}
 
 	noStepSuqueryInterval.Set(conf.GlobalConfig.EvaluationInterval)

@@ -29,6 +29,16 @@ include Makefile.common
 
 DOCKER_IMAGE_NAME       ?= prometheus
 
+.PHONY: update-npm-deps
+update-npm-deps:
+	@echo ">> updating npm dependencies"
+	./scripts/npm-deps.sh "minor"
+
+.PHONY: upgrade-npm-deps
+upgrade-npm-deps:
+	@echo ">> upgrading npm dependencies"
+	./scripts/npm-deps.sh "latest"
+
 .PHONY: ui-install
 ui-install:
 	cd $(UI_PATH) && npm install
@@ -43,7 +53,7 @@ ui-build-module:
 
 .PHONY: ui-test
 ui-test:
-	cd $(UI_PATH) && CI=true npm run test:coverage
+	cd $(UI_PATH) && CI=true npm run test
 
 .PHONY: ui-lint
 ui-lint:
@@ -53,9 +63,14 @@ ui-lint:
 assets: ui-install ui-build
 
 .PHONY: assets-compress
-assets-compress:
+assets-compress: assets
 	@echo '>> compressing assets'
 	scripts/compress_assets.sh
+
+.PHONY: assets-tarball
+assets-tarball: assets
+	@echo '>> packaging assets'
+	scripts/package_assets.sh
 
 .PHONY: test
 # If we only want to only test go code we have to change the test target
@@ -86,7 +101,7 @@ plugins/plugins.go: plugins.yml plugins/generate.go
 plugins: plugins/plugins.go
 
 .PHONY: build
-build: assets assets-compress common-build plugins
+build: assets npm_licenses assets-compress common-build plugins
 
 .PHONY: bench_tsdb
 bench_tsdb: $(PROMU)

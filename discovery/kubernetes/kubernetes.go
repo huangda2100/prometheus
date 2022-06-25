@@ -16,7 +16,7 @@ package kubernetes
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -44,6 +44,9 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
+
+	// Required to get the GCP auth provider working.
+	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 
 	"github.com/prometheus/prometheus/discovery"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
@@ -309,7 +312,7 @@ func New(l log.Logger, conf *SDConfig) (*Discovery, error) {
 		}
 
 		if conf.NamespaceDiscovery.IncludeOwnNamespace {
-			ownNamespaceContents, err := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+			ownNamespaceContents, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
 			if err != nil {
 				return nil, fmt.Errorf("could not determine the pod's namespace: %w", err)
 			}

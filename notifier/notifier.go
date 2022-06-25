@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -514,10 +513,10 @@ func (n *Manager) sendAll(alerts ...*Alert) bool {
 				return false
 			}
 		}
-
 		for _, a := range alerts {
 			level.Warn(n.logger).Log("msg", "sending...", "alert", fmt.Sprintf("%+v", a.Labels))
 		}
+
 		for _, am := range ams.ams {
 			wg.Add(1)
 
@@ -586,7 +585,7 @@ func (n *Manager) sendOne(ctx context.Context, c *http.Client, url string, b []b
 		return err
 	}
 	defer func() {
-		io.Copy(ioutil.Discard, resp.Body)
+		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}()
 
