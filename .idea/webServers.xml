@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="4ba1a915-f709-4506-953e-385d10957d23" name="KFJ">
+        <fileTransfer rootFolder="/home/huangda" accessType="SFTP" host="82.156.167.27" port="22" sshConfigId="123d8442-d517-4292-a682-8054e290245d" sshConfig="root@82.156.167.27:22 key" keyPair="true">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="c8c58d68-224a-4a09-b874-e208cbf3c354" name="TXY">
+        <fileTransfer accessType="SFTP" host="82.156.167.27" port="22" sshConfigId="123d8442-d517-4292-a682-8054e290245d" sshConfig="root@82.156.167.27:22 key" keyPair="true">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
