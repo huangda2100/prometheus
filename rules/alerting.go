@@ -412,12 +412,10 @@ func (r *AlertingRule) Eval(ctx context.Context, ts time.Time, query QueryFunc, 
 		// Check whether we already have alerting state for the identifying label set.
 		// Update the last value and annotations if so, create a new alert entry otherwise.
 		if alert, ok := r.active[h]; ok && alert.State != StateInactive {
-			level.Warn(r.logger).Log("msg", "first round filtered a", "key", h, "alert", fmt.Sprintf("%+v", alert.Labels))
 			alert.Value = a.Value
 			alert.Annotations = a.Annotations
 			continue
 		}
-		level.Warn(r.logger).Log("msg", "first round left", "key", h, "alert", fmt.Sprintf("%+v", a.Labels))
 		r.active[h] = a
 	}
 
@@ -428,13 +426,11 @@ func (r *AlertingRule) Eval(ctx context.Context, ts time.Time, query QueryFunc, 
 			// If the alert was previously firing, keep it around for a given
 			// retention time so it is reported as resolved to the AlertManager.
 			if a.State == StatePending || (!a.ResolvedAt.IsZero() && ts.Sub(a.ResolvedAt) > resolvedRetention) {
-				level.Warn(r.logger).Log("msg", "second round delete", "key", fp, "alert", fmt.Sprintf("%+v", a.Labels))
 				delete(r.active, fp)
 			}
 			if a.State != StateInactive {
 				a.State = StateInactive
 				a.ResolvedAt = ts
-				level.Warn(r.logger).Log("msg", "second round inactive", "key", fp, "alert", fmt.Sprintf("%+v", a.Labels))
 			}
 			continue
 		}
@@ -455,7 +451,7 @@ func (r *AlertingRule) Eval(ctx context.Context, ts time.Time, query QueryFunc, 
 		r.active = map[uint64]*Alert{}
 		return nil, errors.Errorf("exceeded limit of %d with %d alerts", limit, numActivePending)
 	}
-	level.Warn(r.logger).Log("msg", "second round left", "vec", fmt.Sprintf("%+v", vec))
+
 	return vec, nil
 }
 
@@ -529,9 +525,6 @@ func (r *AlertingRule) sendAlerts(ctx context.Context, ts time.Time, resendDelay
 			alerts = append(alerts, &anew)
 		}
 	})
-	for _, a := range alerts {
-		level.Warn(r.logger).Log("msg", "sendAlerts", "all alerts", fmt.Sprintf("%+v", a.Labels))
-	}
 
 	notifyFunc(ctx, r.vector.String(), alerts...)
 }
